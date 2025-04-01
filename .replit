@@ -1,11 +1,14 @@
-# .replit - Replit configuration
-run = "python main.py"
+run = "python3 main.py"
 language = "python3"
+modules = ["python-3.11"]
 
 [packager]
 afterInstall = "pip install -r requirements.txt"
 entrypoint = "main.py"
 
+[packager]
+afterInstall = "wget -O DejaVuSans-Bold.ttf https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf && wget -O DejaVuSans.ttf https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf && pip install -r requirements.txt"
+
 
 [env]
-BOT_TOKEN = "@BOT_TOKEN"
+BOT_TOKEN = "your_actual_bot_token_here"
