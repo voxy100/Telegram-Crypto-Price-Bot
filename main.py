@@ -145,14 +145,14 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    import sys
     import asyncio
+    import sys
 
-    if sys.platform.startswith("win"):
+    if sys.platform.startswith('win'):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    loop = asyncio.get_event_loop()
     try:
+        loop = asyncio.get_event_loop()
         loop.run_until_complete(main())
     except RuntimeError as e:
         print(f"❌ Bot exited with error: {e}")
