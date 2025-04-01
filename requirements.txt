@@ -1,5 +1,5 @@
-python-telegram-bot==20.7
 requests
+python-telegram-bot==20.7
 matplotlib
-numpy
 python-dotenv
+nest_asyncio
