@@ -4,136 +4,152 @@ import logging
 import requests
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import numpy as np
-from io import BytesIO
 from datetime import datetime
+from io import BytesIO
 from dotenv import load_dotenv
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
+import nest_asyncio
 
-# === Load Environment Variables ===
+nest_asyncio.apply()
+
+# === Config ===
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
-# === Logger Setup ===
+# === Logger ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === Global Coin Symbol Mapping ===
-symbol_map = {}
+# === Global ===
+SYMBOL_TO_ID = {}
 
-def fetch_symbol_map():
+# === Functions ===
+async def fetch_symbol_map():
     logger.info("📡 Fetching symbol-to-ID mapping...")
     try:
         res = requests.get(f"{COINGECKO_API}/coins/list")
         res.raise_for_status()
-        data = res.json()
-        mapping = {}
-        for coin in data:
-            sym = coin['symbol'].lower()
-            if sym not in mapping or coin['id'] == "bitcoin":
-                mapping[sym] = coin['id']
-        return mapping
+        return {coin["symbol"]: coin["id"] for coin in res.json()}
     except Exception as e:
-        logger.error(f"❌ Error fetching symbol map: {e}")
+        logger.error(f"Symbol map error: {e}")
         return {}
 
-def format_price(token, symbol, price, market):
+async def fetch_data(endpoint, params=None):
+    try:
+        res = requests.get(f"{COINGECKO_API}/{endpoint}", params=params)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        logger.error(f"API error: {e}")
+        return None
+
+def format_price_info(data, market_data, coin_name, symbol):
+    price = market_data["current_price"]["usd"]
+    market_cap = market_data["market_cap"]["usd"]
+    volume = market_data["total_volume"]["usd"]
+    change_1h = market_data.get("price_change_percentage_1h_in_currency", {}).get("usd", 0)
+    change_24h = market_data.get("price_change_percentage_24h", 0)
+    change_7d = market_data.get("price_change_percentage_7d_in_currency", {}).get("usd", 0)
+
     return (
-        f"🔸{token}: {symbol.upper()}\n"
-        f"Price: ${price['usd']:,.2f}\n"
-        f"Market Cap: ${market['market_cap']:,.2f}\n"
-        f"24h Volume: ${market['total_volume']:,.2f}\n\n"
+        f"🔸{coin_name}: {symbol.upper()}\n"
+        f"Price: ${price:,.2f}\n"
+        f"Market Cap: ${market_cap:,.2f}\n"
+        f"24h Volume: ${volume:,.2f}\n\n"
         f"📈Market Change\n"
-        f"1h: {market['price_change_percentage_1h_in_currency']:.2f}%\n"
-        f"24h: {market['price_change_percentage_24h_in_currency']:.2f}%\n"
-        f"7d: {market['price_change_percentage_7d_in_currency']:.2f}%"
+        f"1h: {change_1h:.2f}%\n"
+        f"24h: {change_24h:.2f}%\n"
+        f"7d: {change_7d:.2f}%"
+    )
+
+def generate_chart(prices: list, token: str):
+    timestamps = [datetime.fromtimestamp(p[0]/1000) for p in prices]
+    values = [p[1] for p in prices]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(timestamps, values, color="#00bcd4", linewidth=2)
+    ax.fill_between(timestamps, values, color="#00bcd4", alpha=0.2)
+
+    ax.set_title(f"{token.upper()} Price Chart (24h)", fontsize=14)
+    ax.set_xlabel("Time")
+    ax.set_ylabel("USD Price")
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    fig.autofmt_xdate()
+
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+# === Handlers ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *RIVX Crypto Bot*\n\n"
+        "/price or /p [token] - Get crypto info\n"
+        "/chart or /c [token] - Show 24h chart\n\n"
+        "_Example: /p btc or /c eth_",
+        parse_mode="Markdown"
     )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Usage: /p btc")
         return
+
     symbol = context.args[0].lower()
-    coin_id = symbol_map.get(symbol)
+    coin_id = SYMBOL_TO_ID.get(symbol)
     if not coin_id:
         await update.message.reply_text("❌ Token not found.")
         return
-    try:
-        price = requests.get(f"{COINGECKO_API}/simple/price", params={
-            "ids": coin_id, "vs_currencies": "usd"
-        }).json()[coin_id]
 
-        market = requests.get(f"{COINGECKO_API}/coins/{coin_id}", params={
-            "localization": "false", "market_data": "true"
-        }).json()["market_data"]
-        name = requests.get(f"{COINGECKO_API}/coins/{coin_id}").json()["name"]
-        msg = format_price(name, symbol, price, market)
-        await update.message.reply_text(msg)
-    except Exception as e:
-        logger.error(f"Price error: {e}")
+    data = await fetch_data(f"coins/{coin_id}", params={"localization": "false"})
+    if not data:
         await update.message.reply_text("❌ Error fetching price.")
+        return
+
+    info = format_price_info(data, data["market_data"], data["name"], symbol)
+    await update.message.reply_text(info)
 
 async def chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Usage: /c btc")
         return
+
     symbol = context.args[0].lower()
-    coin_id = symbol_map.get(symbol)
+    coin_id = SYMBOL_TO_ID.get(symbol)
     if not coin_id:
         await update.message.reply_text("❌ Token not found.")
         return
-    try:
-        chart_data = requests.get(f"{COINGECKO_API}/coins/{coin_id}/market_chart", params={
-            "vs_currency": "usd", "days": "1", "interval": "hourly"
-        }).json()
 
-        times = [datetime.fromtimestamp(p[0] / 1000) for p in chart_data['prices']]
-        prices = [p[1] for p in chart_data['prices']]
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(times, prices, color="#1976D2", linewidth=2)
-        ax.fill_between(times, prices, color="#64B5F6", alpha=0.3)
-
-        ax.set_title(f"{symbol.upper()} Price Chart (24h)", fontsize=14)
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Price (USD)")
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        fig.autofmt_xdate()
-        ax.grid(True, linestyle='--', alpha=0.4)
-
-        last_price = prices[-1]
-        ax.annotate(f"${last_price:,.2f}", xy=(times[-1], last_price),
-                    xytext=(-70, 20), textcoords="offset points",
-                    bbox=dict(boxstyle="round", fc="white", ec="blue"),
-                    arrowprops=dict(arrowstyle="->", color="blue"))
-
-        buf = BytesIO()
-        fig.savefig(buf, format='png')
-        plt.close(fig)
-        buf.seek(0)
-        await update.message.reply_photo(photo=InputFile(buf), caption=f"📈 24h Chart for {symbol.upper()}")
-    except Exception as e:
-        logger.error(f"Chart error: {e}")
+    data = await fetch_data(f"coins/{coin_id}/market_chart", params={"vs_currency": "usd", "days": 1})
+    if not data or "prices" not in data:
         await update.message.reply_text("❌ Error fetching chart data.")
+        return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 *RIVX Crypto Bot*\n\n"
-        "Check price or chart:\n"
-        "`/p btc` – price\n"
-        "`/c eth` – chart\n",
-        parse_mode="Markdown"
-    )
+    img = generate_chart(data["prices"], symbol)
+    await update.message.reply_photo(photo=InputFile(img), caption=f"📊 24h Chart for {symbol.upper()}")
 
-# === Start Bot ===
-if __name__ == "__main__":
-    symbol_map = fetch_symbol_map()
+# === Main ===
+async def main():
+    global SYMBOL_TO_ID
+    SYMBOL_TO_ID = await fetch_symbol_map()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler(["start"], start))
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler(["price", "p"], price))
     app.add_handler(CommandHandler(["chart", "c"], chart))
 
     logger.info("✅ Bot is running...")
-    app.run_polling()
+    await app.run_polling()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        print(f"❌ Bot exited with error: {e}")
